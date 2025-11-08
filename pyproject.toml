@@ -3,12 +3,18 @@ name = "s8"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "asyncio>=3.4.3",
     "bs4>=0.0.2",
     "dotenv>=0.9.9",
     "faiss-cpu>=1.10.0",
+    "google>=3.0.0",
+    "google-api-python-client>=2.185.0",
+    "google-auth>=2.41.1",
+    "google-auth-httplib2>=0.2.0",
+    "google-auth-oauthlib>=1.2.2",
+    "google-genai>=1.41.0",
     "httpx>=0.28.1",
     "llama-index>=0.12.31",
     "llama-index-embeddings-google-genai>=0.1.0",
@@ -20,5 +26,4 @@ dependencies = [
     "requests>=2.32.3",
     "rich>=14.0.0",
     "tqdm>=4.67.1",
-    "trafilatura[all]>=2.0.0",
 ]
