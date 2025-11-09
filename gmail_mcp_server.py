@@ -12,15 +12,19 @@ import os
 import base64
 from email.message import EmailMessage
 from typing import Optional
+import datetime
+import io
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaIoBaseUpload
 import smtplib
 from email.mime.text import MIMEText
 from dotenv import load_dotenv
+import google.generativeai as genai
 
 # import logging as log
 # log.basicConfig(level=log.INFO)
@@ -36,7 +40,11 @@ import webbrowser
 mcp = FastMCP("GmailServer")
 
 # Define Support Functions
-GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
+GMAIL_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/spreadsheets"
+]
 
 def _get_gmail_creds(
     client_secret_path: str = "client_secret.json", 
@@ -70,6 +78,14 @@ def _get_gmail_creds(
 def _build_gmail_service(creds: Credentials):
     """Build Gmail API service."""
     return build("gmail", "v1", credentials=creds)
+
+def _build_drive_service(creds: Credentials):
+    """Build Drive API service."""
+    return build("drive", "v3", credentials=creds)
+
+def _build_sheets_service(creds: Credentials):
+    """Build Sheets API service."""
+    return build("sheets", "v4", credentials=creds)
 
 def _encode_email_message(msg: EmailMessage) -> dict:
     """Encode email message for Gmail API."""
@@ -172,6 +188,108 @@ def send_email_smtp(subject: str, body: str) -> dict:
         }
     except Exception as e:
         error_msg = f"Failed to send email: {e}"
+        return {
+            "status": "error",
+            "message": error_msg,
+            "content": [TextContent(type="text", text=error_msg)]
+        }
+
+@mcp.tool()
+def upload_to_drive(content: str) -> dict:
+    """
+    Uploads a text file with the given content to Google Drive.
+    The file will be named with a timestamp.
+    """
+    try:
+        creds = _get_gmail_creds()
+        service = _build_drive_service(creds)
+
+        # Generate a filename with the current timestamp
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        filename = f"telegram_message_{timestamp}.txt"
+
+        # Create a file in memory
+        file_content = io.BytesIO(content.encode('utf-8'))
+        
+        file_metadata = {'name': filename}
+        media = MediaIoBaseUpload(file_content, mimetype='text/plain')
+        
+        # Upload the file
+        file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+        
+        success_msg = f"File '{filename}' uploaded successfully to Google Drive. File ID: {file.get('id')}"
+        return {
+            "status": "success",
+            "message": success_msg,
+            "content": [TextContent(type="text", text=success_msg)]
+        }
+    except Exception as e:
+        error_msg = f"Failed to upload file to Google Drive: {e}"
+        return {
+            "status": "error",
+            "message": error_msg,
+            "content": [TextContent(type="text", text=error_msg)]
+        }
+
+@mcp.tool()
+def process_telegram_message(message: str) -> dict:
+    """
+    Processes a Telegram message by sending it to an LLM,
+    saving the response to a new Google Sheet, and returning a shareable link.
+    """
+    try:
+        # 1. Get LLM response
+        load_dotenv()
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise ValueError("Missing GEMINI_API_KEY in .env file.")
+        
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        response = model.generate_content(message)
+        llm_response = response.text
+
+        # 2. Create Google Sheet and save response
+        creds = _get_gmail_creds()
+        sheets_service = _build_sheets_service(creds)
+        
+        spreadsheet = {
+            'properties': {
+                'title': f"LLM Response for: {message[:30]}..."
+            }
+        }
+        spreadsheet = sheets_service.spreadsheets().create(body=spreadsheet, fields='spreadsheetId,spreadsheetUrl').execute()
+        spreadsheet_id = spreadsheet.get('spreadsheetId')
+        spreadsheet_url = spreadsheet.get('spreadsheetUrl')
+
+        # Write the LLM response to the first sheet
+        body = {
+            'values': [[llm_response]]
+        }
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range='A1',
+            valueInputOption='RAW',
+            body=body
+        ).execute()
+
+        # 3. Make the sheet public
+        drive_service = _build_drive_service(creds)
+        permission = {
+            'type': 'anyone',
+            'role': 'reader'
+        }
+        drive_service.permissions().create(fileId=spreadsheet_id, body=permission).execute()
+
+        return {
+            "status": "success",
+            "message": "Successfully processed message and created Google Sheet.",
+            "spreadsheet_url": spreadsheet_url,
+            "content": [TextContent(type="text", text=spreadsheet_url)]
+        }
+
+    except Exception as e:
+        error_msg = f"Failed to process Telegram message: {e}"
         return {
             "status": "error",
             "message": error_msg,
